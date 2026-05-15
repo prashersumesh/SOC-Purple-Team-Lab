@@ -1,0 +1,152 @@
+# Detection Query #6: Malicious Process Execution Timeline
+# MITRE ATT&CK: T1059 - Command and Scripting Interpreter
+# Detection Logic: Tracks process creation events (Sysmon EventCode 1) for attack-related commands
+# Alert Threshold: Execution of net.exe, schtasks.exe with suspicious parameters
+# Business Impact: Complete attack chain reconstruction for incident response
+
+index=sysmon EventCode=1 host="DESKTOP-PT2GLLD"
+(CommandLine="*net user*" OR CommandLine="*schtasks*" OR CommandLine="*net localgroup*" OR CommandLine="*wevtutil*")
+| table _time, Image, CommandLine, User, ParentImage, ParentCommandLine
+| eval Process_Type=case(
+    match(CommandLine, "net user.*add"), "User Account Creation",
+    match(CommandLine, "net localgroup.*add"), "Privilege Escalation",
+    match(CommandLine, "schtasks.*create"), "Scheduled Task Persistence",
+    match(CommandLine, "wevtutil.*cl|clear"), "Log Clearing (Defense Evasion)",
+    1=1, "Other Suspicious Activity"
+)
+| eval Severity=case(
+    match(CommandLine, "wevtutil.*cl"), "CRITICAL",
+    match(CommandLine, "net localgroup Administrators"), "CRITICAL",
+    match(CommandLine, "net user.*add"), "HIGH",
+    match(CommandLine, "schtasks.*create"), "HIGH",
+    1=1, "MEDIUM"
+)
+| sort _time
+| fields _time, User, Image, CommandLine, ParentImage, Process_Type, Severity
+
+# Expected Output (Complete Attack Timeline):
+# Time                 | User       | Image              | CommandLine                              | Process_Type              | Severity
+# -------------------------------------------------------------------------------------------------------------------------
+# 2026-05-15 00:19:12  | Lab_Victim | C:\Windows\...\net.exe | net user Backdoor Hacker123! /add    | User Account Creation     | HIGH
+# 2026-05-15 00:19:12  | Lab_Victim | C:\Windows\...\net.exe | net user AttackTest Attack123! /add  | User Account Creation     | HIGH
+# 2026-05-15 00:19:17  | Lab_Victim | C:\Windows\...\schtasks.exe | schtasks /create /tn UpdateCheck | Scheduled Task Persistence | HIGH
+# 2026-05-15 00:19:20  | Lab_Victim | C:\Windows\...\net.exe | net localgroup Administrators Backdoor /add | Privilege Escalation | CRITICAL
+
+# Use Case: Incident Response Timeline Reconstruction
+# This query provides complete chronological view of attacker's actions
+# Enables IR team to understand:
+# - What commands were executed
+# - In what order (timeline)
+# - By which user account (compromised vs. attacker-created)
+# - From which parent process (manual cmd.exe vs. script vs. remote execution)
+
+# Parent Process Analysis:
+# ParentImage reveals HOW the command was executed:
+# - cmd.exe = Manual command execution or batch script
+# - powershell.exe = PowerShell script or remote execution
+# - wmiprvse.exe = WMI remote execution (lateral movement)
+# - services.exe = Executed as Windows service
+# - svchost.exe = Executed via scheduled task
+# - explorer.exe = User manually opened command prompt
+
+# Enhanced Query - Include Parent Process Context:
+index=sysmon EventCode=1 host="DESKTOP-PT2GLLD"
+(Image="*net.exe" OR Image="*schtasks.exe" OR Image="*wevtutil.exe")
+| table _time, User, Image, CommandLine, ParentImage, ParentCommandLine, ProcessId, ParentProcessId
+| eval Execution_Context=case(
+    match(ParentImage, "cmd.exe"), "Interactive Command Prompt",
+    match(ParentImage, "powershell.exe"), "PowerShell Execution",
+    match(ParentImage, "wmiprvse.exe"), "WMI Remote Execution (Lateral Movement)",
+    match(ParentImage, "services.exe"), "Service Execution",
+    match(ParentImage, "explorer.exe"), "User Initiated",
+    1=1, "Unknown Parent"
+)
+| sort _time
+
+# Attack Chain Correlation - Link Process Creation to Network Activity:
+index=sysmon (EventCode=1 OR EventCode=3) host="DESKTOP-PT2GLLD"
+| transaction ProcessGuid maxspan=5m
+| where eventcount > 1
+| table _time, Image, CommandLine, DestinationIp, DestinationPort
+| eval Attack_Stage=if(eventcount>1, "Process Execution + Network Connection", "Isolated Event")
+
+# Result: Identifies processes that both execute AND make network connections
+# Example: cmd.exe executes then connects to C2 server
+
+# Complete Attack Lifecycle Query (All Sysmon EventCodes):
+index=sysmon host="DESKTOP-PT2GLLD" 
+earliest="05/15/2026:00:18:00" latest="05/15/2026:00:22:00"
+| table _time, EventCode, Image, CommandLine, DestinationIp, TargetFilename
+| eval Event_Type=case(
+    EventCode=1, "Process Created",
+    EventCode=3, "Network Connection",
+    EventCode=5, "Process Terminated",
+    EventCode=7, "Image Loaded (DLL)",
+    EventCode=8, "CreateRemoteThread",
+    EventCode=10, "Process Access",
+    EventCode=11, "File Created",
+    EventCode=12, "Registry Object Added/Deleted",
+    EventCode=13, "Registry Value Set",
+    EventCode=22, "DNS Query",
+    1=1, "Other Sysmon Event"
+)
+| sort _time
+| fields _time, Event_Type, Image, CommandLine, DestinationIp, TargetFilename
+
+# This comprehensive timeline shows:
+# 1. What processes executed (EventCode 1)
+# 2. What network connections were made (EventCode 3)
+# 3. What files were created (EventCode 11)
+# 4. What registry keys were modified (EventCode 12/13)
+# 5. What DNS queries occurred (EventCode 22)
+
+# Forensic Analysis - Process Tree Reconstruction:
+index=sysmon EventCode=1 host="DESKTOP-PT2GLLD"
+| eval ProcessTree=ParentImage + " → " + Image
+| table _time, ProcessTree, CommandLine, User
+| sort _time
+
+# Example Output:
+# explorer.exe → cmd.exe
+# cmd.exe → net.exe (User creation)
+# cmd.exe → schtasks.exe (Persistence)
+# cmd.exe → net.exe (Privilege escalation)
+
+# Threat Hunting - Unusual Parent-Child Relationships:
+index=sysmon EventCode=1
+| eval Unusual=case(
+    (match(ParentImage, "winword.exe|excel.exe") AND match(Image, "powershell.exe|cmd.exe")), "Office Macro Execution",
+    (match(ParentImage, "services.exe") AND NOT match(Image, "svchost.exe")), "Unusual Service Spawn",
+    (match(ParentImage, "wmiprvse.exe")), "WMI Execution (Potential Lateral Movement)",
+    (match(ParentImage, "svchost.exe") AND match(Image, "net.exe|whoami.exe")), "Service Reconnaissance",
+    1=1, "Normal"
+)
+| where Unusual != "Normal"
+| table _time, Unusual, ParentImage, Image, CommandLine, User
+
+# SOC Investigation Workflow:
+# 1. Identify time window of suspicious activity
+# 2. Run this query to get complete process timeline
+# 3. Analyze parent-child relationships for anomalies
+# 4. Correlate with network activity (EventCode 3)
+# 5. Check for file modifications (EventCode 11)
+# 6. Document complete attack chain
+# 7. Identify initial access vector (first malicious process)
+# 8. Identify persistence mechanisms (scheduled tasks, registry keys)
+# 9. Determine lateral movement attempts (network connections to other hosts)
+# 10. Assess data exfiltration risk (large network transfers)
+
+# Production Deployment:
+# - Retention: 90 days minimum for Sysmon EventCode 1
+# - Index: sysmon (dedicated index for performance)
+# - Alert: Trigger on suspicious parent-child combinations
+# - Enrichment: Add VirusTotal hash lookups for unknown executables
+# - Baseline: Profile normal process execution patterns per host
+
+# Related MITRE ATT&CK Techniques:
+# T1059.001 - PowerShell
+# T1059.003 - Windows Command Shell
+# T1059.005 - Visual Basic
+# T1059.006 - Python
+# T1047 - Windows Management Instrumentation
+# T1569.002 - Service Execution

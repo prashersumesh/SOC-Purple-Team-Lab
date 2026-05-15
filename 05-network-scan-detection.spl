@@ -1,0 +1,76 @@
+# Detection Query #5: Network Port Scanning Detection
+# MITRE ATT&CK: T1046 - Network Service Discovery
+# Detection Logic: Analyzes Sysmon EventCode 3 (Network Connection) for abnormal port diversity
+# Alert Threshold: >10 unique destination ports from single source IP = potential scan
+# Business Impact: Reconnaissance activity preceding targeted attack
+
+index=sysmon EventCode=3 host="DESKTOP-PT2GLLD"
+| stats dc(DestinationPort) as UniquePortsScanned, count as TotalConnections, values(DestinationPort) as PortList by SourceIp
+| where UniquePortsScanned > 10
+| eval Scan_Likelihood=case(
+    UniquePortsScanned > 50, "HIGH - Active Port Scan",
+    UniquePortsScanned > 20, "MEDIUM - Possible Scan",
+    1=1, "LOW - Elevated Port Usage"
+)
+| eval Risk_Score=UniquePortsScanned*2
+| sort - UniquePortsScanned
+| table SourceIp, UniquePortsScanned, TotalConnections, Scan_Likelihood, Risk_Score
+
+# Expected Output (Attack Scenario):
+# SourceIp        | UniquePortsScanned | TotalConnections | Scan_Likelihood | Risk_Score
+# ------------------------------------------------------------------------------------------
+# 192.168.56.102  | 52                 | 1,247            | HIGH            | 104
+
+# Baseline Comparison Query:
+index=sysmon EventCode=3 host="MY-WINDOWS-PC"
+| stats dc(DestinationPort) as UniquePortsScanned by SourceIp
+| eval Traffic_Type="Baseline (Normal)"
+
+# Typical Baseline Results:
+# Normal workstation: 3-8 unique ports (DNS, HTTP/HTTPS, SMB, RDP)
+# Under attack: 50+ unique ports (sequential scan pattern)
+
+# Advanced Detection - Sequential Port Pattern:
+index=sysmon EventCode=3 host="DESKTOP-PT2GLLD" SourceIp="192.168.56.102"
+| sort DestinationPort
+| streamstats window=5 range(DestinationPort) as PortRange
+| where PortRange < 10
+| stats count as SequentialConnections by SourceIp
+| where SequentialConnections > 20
+| eval Alert="CRITICAL - Sequential Port Scan Detected"
+
+# Detection Breakdown by Port Range:
+index=sysmon EventCode=3 host="DESKTOP-PT2GLLD" SourceIp="192.168.56.102"
+| eval PortCategory=case(
+    DestinationPort <= 1024, "Well-Known Ports",
+    DestinationPort <= 49151, "Registered Ports",
+    1=1, "Dynamic Ports"
+)
+| stats count by PortCategory
+
+# Common Scan Tools Signatures:
+# Nmap: Rapid connections, sequential ports, specific TTL values
+# Masscan: Extremely high connection rate
+# Nessus: Specific User-Agent strings, service version requests
+
+# SOC Response Playbook:
+# 1. Identify source IP - internal or external?
+# 2. Check if source is authorized scanner (Nessus, Qualys, etc.)
+# 3. Block source IP at firewall if unauthorized
+# 4. Alert asset owner of targeted system
+# 5. Review firewall/IDS logs for corresponding alerts
+# 6. Check for follow-up exploitation attempts on discovered open ports
+# 7. Document in incident ticket with screenshots
+
+# False Positive Reduction:
+# Whitelist known scanners:
+# | where NOT (SourceIp="10.0.1.50" OR SourceIp="10.0.1.51")  # Nessus scanners
+# 
+# Whitelist service discovery:
+# | where NOT match(Image, "(?i)svchost.exe")  # Windows service host
+
+# Production Tuning:
+# - Adjust threshold based on environment (>10 for tight security, >25 for noisy networks)
+# - Schedule to run every 5 minutes for near-real-time detection
+# - Correlate with firewall deny logs for comprehensive view
+# - Create dashboard showing scan attempts over time

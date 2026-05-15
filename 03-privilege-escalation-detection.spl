@@ -1,0 +1,78 @@
+# Detection Query #3: Privilege Escalation Detection
+# MITRE ATT&CK: T1098 - Account Manipulation
+# Detection Logic: Monitors EventCode 4732 (Member Added to Security-Enabled Local Group)
+# Alert Threshold: ANY addition to Administrators group
+# Business Impact: Full system compromise, unauthorized administrative access
+
+index=wineeventlog EventCode=4732 host="DESKTOP-PT2GLLD" 
+TargetUserName="Administrators"
+| table _time, MemberName, SubjectUserName, SubjectDomainName, TargetUserName
+| rename MemberName as "User Added to Admins", SubjectUserName as "Added By", TargetUserName as "Group Modified"
+| eval Alert_Severity="CRITICAL"
+| eval Risk_Score=100
+
+# Expected Output (Attack Evidence):
+# Time                 | User Added to Admins | Added By    | Group Modified | Alert_Severity
+# -------------------------------------------------------------------------------------
+# 2026-05-15 00:19:00  | Backdoor             | Lab_Victim  | Administrators | CRITICAL
+
+# Why This is Critical:
+# - Administrators group grants full control over system
+# - Common persistence technique after initial compromise
+# - Often precedes malware installation, data exfiltration
+# - Indicates attacker has elevated from user-level to admin-level access
+
+# Detection Breakdown:
+# EventCode 4732 = A member was added to a security-enabled local group
+# TargetUserName = The group that was modified (Administrators)
+# MemberName = The account that was added to the group
+# SubjectUserName = Who performed the action (should be legitimate admin)
+
+# Advanced Correlation - Check if added user was recently created:
+index=wineeventlog (EventCode=4720 OR EventCode=4732) host="DESKTOP-PT2GLLD"
+| transaction TargetUserName maxspan=5m
+| where eventcount > 1
+| table _time, TargetUserName, EventCode
+| eval Attack_Pattern=if(eventcount>1, "Account Created + Elevated to Admin", "Normal")
+
+# Result: Identifies accounts created then immediately promoted to admin
+# This pattern strongly indicates malicious activity
+
+# SOC Response Playbook:
+# 1. IMMEDIATE: Lock the added account (net user <username> /active:no)
+# 2. Verify if action was authorized via change management ticket
+# 3. Interview the "Added By" user - was it them or compromised account?
+# 4. Check added user's login history (EventCode 4624)
+# 5. Review added user's recent process executions (Sysmon EventCode 1)
+# 6. Scan system for malware/backdoors
+# 7. Reset password of compromised account
+# 8. Force logout of all sessions: quser; logoff <session_id>
+# 9. Document in incident response ticket
+# 10. Preserve forensic evidence (memory dump, disk image)
+
+# False Positive Reduction:
+# Whitelist known admin accounts:
+# | where NOT (SubjectUserName="IT_Admin" OR SubjectUserName="ServiceDesk_Tool")
+
+# Whitelist authorized change windows:
+# | where NOT (date_hour>=2 AND date_hour<=4 AND date_wday=0)  # Sunday 2-4 AM maintenance
+
+# Production Deployment:
+# - Alert Priority: P1 (Critical)
+# - Notification: Email + SMS to SOC Manager
+# - Auto-create incident ticket in ServiceNow
+# - Trigger automated response: Lock account pending investigation
+# - Retention: 365 days (compliance requirement)
+# - Schedule: Real-time (trigger on every occurrence)
+
+# Related EventCodes to Monitor:
+# 4728 - Member added to security-enabled global group
+# 4756 - Member added to security-enabled universal group
+# 4735 - Security-enabled local group changed
+# 4737 - Security-enabled global group changed
+
+# MITRE ATT&CK Sub-Techniques:
+# T1098.001 - Additional Cloud Credentials
+# T1098.002 - Additional Email Delegate Permissions
+# T1098.003 - Additional Cloud Roles
+# T1098.004 - SSH Authorized Keys

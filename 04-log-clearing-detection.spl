@@ -1,0 +1,144 @@
+# Detection Query #4: Log Clearing Detection (CRITICAL ALERT)
+# MITRE ATT&CK: T1070.001 - Indicator Removal: Clear Windows Event Logs
+# Detection Logic: Monitors EventCode 1102 (Security Audit Log Cleared)
+# Alert Threshold: EventCode 1102 should NEVER occur in production
+# Business Impact: Attacker covering tracks, evidence destruction, potential compliance violation
+
+index=wineeventlog EventCode=1102 host="DESKTOP-PT2GLLD"
+| table _time, SubjectUserName, SubjectDomainName, host
+| eval Alert_Severity="CRITICAL"
+| eval Alert_Message="🚨 SECURITY AUDIT LOG CLEARED - IMMEDIATE INVESTIGATION REQUIRED"
+| eval Recommended_Action="1) Lock account immediately 2) Initiate incident response 3) Preserve forensic evidence"
+
+# ⚠️ CRITICAL SECURITY ALERT ⚠️
+# This event indicates a HIGH PROBABILITY of active attack in progress
+# Log clearing is a classic indicator that attacker is attempting to hide their tracks
+
+# Expected Output Format:
+# Time                 | SubjectUserName | SubjectDomainName | Alert_Severity | Alert_Message
+# -------------------------------------------------------------------------------------------
+# 2026-05-14 16:50:00  | Lab_Victim      | DESKTOP-PT2GLLD   | CRITICAL       | 🚨 SECURITY AUDIT LOG CLEARED...
+
+# Why EventCode 1102 is Extremely Suspicious:
+# - Legitimate administrators rarely clear security logs
+# - Most organizations have log retention policies (30-90+ days)
+# - Clearing logs destroys forensic evidence of attacker activity
+# - Often final stage of attack before exfiltration
+# - May indicate attacker successfully obtained admin privileges
+
+# Enhanced Detection - Correlate with Recent Admin Changes:
+index=wineeventlog (EventCode=1102 OR EventCode=4732) host="DESKTOP-PT2GLLD"
+| transaction host maxspan=1h
+| where eventcount > 1
+| table _time, SubjectUserName, EventCode
+| eval Attack_Chain=if(eventcount>1, "Privilege Escalation → Log Clearing", "Isolated Event")
+
+# This correlation identifies:
+# Account elevated to admin → Security log cleared within 1 hour
+# Strong indicator of attack progression
+
+# Sysmon Correlation - Identify the clearing process:
+index=sysmon EventCode=1 Image="*wevtutil.exe" host="DESKTOP-PT2GLLD"
+| table _time, CommandLine, User, ParentImage, ParentCommandLine
+| eval Tool_Used=case(
+    match(CommandLine, "wevtutil.*cl|clear-log"), "wevtutil.exe",
+    match(CommandLine, "Clear-EventLog"), "PowerShell Clear-EventLog",
+    1=1, "Unknown Method"
+)
+
+# Common Log Clearing Commands Detected:
+# wevtutil cl Security
+# wevtutil clear-log Security
+# Clear-EventLog -LogName Security
+# Remove-EventLog -LogName Security
+
+# Multi-Channel Detection:
+index=wineeventlog EventCode=1102
+| table _time, host, Channel
+| stats count by Channel
+| eval Log_Type=case(
+    Channel="Security", "CRITICAL - Contains authentication/authorization events",
+    Channel="System", "HIGH - Contains service/driver events",
+    Channel="Application", "MEDIUM - Contains application errors",
+    1=1, "Unknown Channel"
+)
+
+# SOC Response Playbook (Immediate Actions):
+# MINUTE 0-5:
+# 1. Alert SOC Manager via phone/SMS (do NOT rely on email)
+# 2. Lock the SubjectUserName account: net user <username> /active:no
+# 3. Isolate affected system from network (pull network cable if necessary)
+# 4. Take memory snapshot: DumpIt.exe or WinPmem
+# 5. Document all actions with timestamps
+
+# MINUTE 5-15:
+# 6. Check backup logs on SIEM (logs should be forwarded before clearing)
+# 7. Review user's recent activity in SIEM (last 24 hours)
+# 8. Check for lateral movement to other systems
+# 9. Identify initial access vector (how did attacker get in?)
+# 10. Preserve disk image for forensic analysis
+
+# MINUTE 15-30:
+# 11. Reset passwords for ALL admin accounts
+# 12. Force logout all active sessions on affected system
+# 13. Scan for malware/backdoors (Autoruns, Sysinternals Suite)
+# 14. Check for scheduled tasks, new user accounts, registry persistence
+# 15. Initiate full incident response process
+
+# HOUR 1-4:
+# 16. Perform full forensic analysis on memory/disk images
+# 17. Review firewall logs for data exfiltration attempts
+# 18. Check other systems for similar indicators
+# 19. Notify legal/compliance team (potential breach disclosure requirement)
+# 20. Begin remediation and recovery plan
+
+# Automated Response (if configured):
+# - Trigger: EventCode 1102 detected
+# - Action 1: Email/SMS to SOC Manager, CISO, IR Team
+# - Action 2: Auto-create P1 incident ticket in ServiceNow
+# - Action 3: Trigger SOAR playbook to lock account
+# - Action 4: Snapshot VM for forensic preservation
+# - Action 5: Network isolation via firewall ACL
+
+# Compliance Impact:
+# - GDPR: Potential breach notification requirement (72 hours)
+# - PCI DSS: Log retention violation (Requirement 10.7)
+# - HIPAA: Evidence destruction may indicate PHI breach
+# - SOX: Audit trail compromise (Section 404)
+
+# False Positive Scenarios (Rare):
+# - Authorized log rotation by monitoring tool (should use forwarding instead)
+# - System administrator troubleshooting disk space (should have ticket)
+# - Automated maintenance script (should be documented)
+# Even if legitimate, EventCode 1102 should ALWAYS be investigated
+
+# Production Deployment Configuration:
+# - Alert Priority: P1 (Critical)
+# - SIEM Retention: 365+ days (even if local logs cleared, SIEM retains copy)
+# - Notification Method: Multi-channel (Email + SMS + Phone + Slack)
+# - Auto-Response: Enabled (lock account, isolate system)
+# - Escalation Path: SOC Analyst → SOC Manager → CISO (within 15 minutes)
+# - After-Hours: Page on-call incident responder immediately
+
+# Forensic Evidence to Preserve:
+# 1. Memory dump (volatile data)
+# 2. Disk image (full forensic copy)
+# 3. Network packet capture (if available)
+# 4. SIEM logs forwarded BEFORE clearing (critical evidence)
+# 5. Timeline of all EventCodes from affected user in past 48 hours
+# 6. Process execution history (Sysmon EventCode 1)
+# 7. Network connections (Sysmon EventCode 3)
+# 8. File modifications (Sysmon EventCode 11)
+
+# Additional MITRE ATT&CK Techniques Often Paired with T1070.001:
+# T1070.004 - File Deletion (remove malware after execution)
+# T1070.006 - Timestomp (modify file timestamps)
+# T1562.001 - Disable or Modify Tools (disable antivirus)
+# T1562.002 - Disable Windows Event Logging (stop log generation)
+
+# Advanced Threat Hunting Query:
+index=sysmon EventCode=1 
+(Image="*wevtutil.exe" OR Image="*powershell.exe" OR Image="*cmd.exe")
+(CommandLine="*cl *" OR CommandLine="*clear*" OR CommandLine="*Clear-EventLog*" OR CommandLine="*Remove-EventLog*")
+| table _time, User, Image, CommandLine, ParentImage
+| eval Threat_Level="CRITICAL"

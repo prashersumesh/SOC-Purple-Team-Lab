@@ -1,0 +1,41 @@
+# Detection Query #2: Scheduled Task Persistence
+# MITRE ATT&CK: T1053.005 - Scheduled Task/Job: Scheduled Task
+# Detection Logic: Monitors EventCode 4698 (scheduled task created)
+# Alert Threshold: Tasks created outside maintenance windows or by non-admin users
+# Business Impact: Persistent code execution mechanism, potential malware/RAT
+
+index=wineeventlog EventCode=4698 host="DESKTOP-PT2GLLD"
+| table _time, TaskName, SubjectUserName, TaskContent
+| rename TaskName as "Scheduled Task", SubjectUserName as "Created By"
+| eval Alert_Priority=if(match(TaskContent, "(?i)(cmd|powershell|wscript|cscript|mshta)"), "CRITICAL", "HIGH")
+
+# Expected Output:
+# Scheduled Task  | Created By   | Alert_Priority
+# ------------------------------------------------
+# UpdateCheck     | Lab_Victim   | CRITICAL  (calc.exe - benign but suspicious pattern)
+# AttackTask      | Lab_Victim   | CRITICAL  (cmd.exe - high-risk binary)
+
+# Common Malicious Task Patterns:
+# - Tasks running cmd.exe, powershell.exe without parameters
+# - Tasks with random/gibberish names
+# - Tasks triggered every minute (excessive frequency)
+# - Tasks created by compromised user accounts
+# - Tasks executing from temp directories (%TEMP%, \AppData\Local\Temp)
+
+# Enhanced Detection (Sysmon Integration):
+index=sysmon EventCode=1 Image="*schtasks.exe"
+| table _time, CommandLine, User, ParentImage
+| search CommandLine="*/create*"
+
+# SOC Action:
+# 1. Review task trigger schedule (every minute = high suspicion)
+# 2. Analyze task executable - is it digitally signed?
+# 3. Check parent process of schtasks.exe (should be administrative tool)
+# 4. Delete task if unauthorized: schtasks /delete /tn <TaskName> /f
+# 5. Scan task executable with AV/EDR
+# 6. Check for similar tasks across other endpoints (lateral movement indicator)
+
+# Production Deployment:
+# - Whitelist known good scheduled tasks (Windows Update, AV scans, backups)
+# - Alert on tasks created between 6 PM - 6 AM (off-hours indicator)
+# - Correlate with EventCode 4720 (account creation) for full attack chain

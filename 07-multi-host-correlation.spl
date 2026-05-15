@@ -1,0 +1,202 @@
+# Detection Query #7: Multi-Host Correlation (Attack vs. Baseline Traffic)
+# Purpose: Compare victim machine behavior against baseline endpoint
+# Detection Logic: Statistical anomaly detection across multiple hosts
+# Alert Threshold: Significant deviation from baseline patterns
+# Business Impact: Identifies compromised hosts by comparing to known-good endpoints
+
+# Query 1: Port Usage Comparison (Network Behavior)
+index=sysmon EventCode=3
+| stats dc(DestinationPort) as UniquePorts, count as TotalConnections by host
+| eval Traffic_Pattern=case(
+    UniquePorts > 50, "ATTACK - Port Scan Detected",
+    UniquePorts > 20, "SUSPICIOUS - Investigate Further",
+    UniquePorts < 10, "NORMAL - Baseline Traffic",
+    1=1, "INVESTIGATE - Elevated Port Usage"
+)
+| eval Risk_Score=UniquePorts*2
+| table host, UniquePorts, TotalConnections, Traffic_Pattern, Risk_Score
+| sort - UniquePorts
+
+# Expected Output:
+# host              | UniquePorts | TotalConnections | Traffic_Pattern       | Risk_Score
+# ------------------------------------------------------------------------------------------
+# DESKTOP-PT2GLLD   | 52          | 1,247            | ATTACK - Port Scan    | 104
+# MY-WINDOWS-PC     | 7           | 423              | NORMAL - Baseline     | 14
+
+# Analysis:
+# Victim host contacted 52 unique ports (7.4x higher than baseline)
+# Baseline host contacted 7 unique ports (typical Windows workstation)
+# Clear statistical anomaly indicating reconnaissance activity
+
+# Query 2: Failed Login Comparison (Authentication Behavior)
+index=wineeventlog EventCode=4625 
+| stats count as FailedLogins by host, TargetUserName
+| eventstats avg(FailedLogins) as AvgFailedLogins, stdev(FailedLogins) as StdDev
+| eval ZScore=(FailedLogins - AvgFailedLogins) / StdDev
+| eval Anomaly=if(ZScore>2, "ANOMALY - Brute Force Attack", "NORMAL")
+| table host, TargetUserName, FailedLogins, AvgFailedLogins, ZScore, Anomaly
+| where Anomaly="ANOMALY - Brute Force Attack"
+
+# Statistical Analysis:
+# Z-Score > 2 indicates value is 2 standard deviations above mean
+# Identifies hosts with abnormally high failed login attempts
+# Baseline should show 0-2 failed logins per day
+# Attack shows 4+ failed logins in short time window
+
+# Query 3: New Account Creation Comparison
+index=wineeventlog EventCode=4720
+| stats count as NewAccounts, values(TargetUserName) as AccountsCreated by host
+| eval Security_Status=case(
+    NewAccounts > 3, "CRITICAL - Multiple Backdoor Accounts",
+    NewAccounts > 0, "INVESTIGATE - Account Creation Detected",
+    1=1, "NORMAL - No New Accounts"
+)
+| table host, NewAccounts, AccountsCreated, Security_Status
+
+# Expected Output:
+# host              | NewAccounts | AccountsCreated                        | Security_Status
+# ------------------------------------------------------------------------------------------
+# DESKTOP-PT2GLLD   | 4           | Backdoor, AttackTest, TestUser, Fresh  | CRITICAL - Multiple Backdoors
+# MY-WINDOWS-PC     | 0           | (none)                                 | NORMAL - No New Accounts
+
+# Query 4: Scheduled Task Creation Comparison
+index=wineeventlog EventCode=4698
+| stats count as TasksCreated, values(TaskName) as TaskNames by host
+| eval Persistence_Risk=case(
+    TasksCreated > 2, "HIGH - Multiple Persistence Mechanisms",
+    TasksCreated > 0, "MEDIUM - Investigate Task Purpose",
+    1=1, "NORMAL - No Tasks Created"
+)
+| table host, TasksCreated, TaskNames, Persistence_Risk
+
+# Expected Output:
+# host              | TasksCreated | TaskNames                    | Persistence_Risk
+# -------------------------------------------------------------------------------------
+# DESKTOP-PT2GLLD   | 2            | UpdateCheck, AttackTask      | HIGH - Multiple Persistence
+# MY-WINDOWS-PC     | 0            | (none)                       | NORMAL - No Tasks Created
+
+# Query 5: Process Execution Diversity (Command-Line Activity)
+index=sysmon EventCode=1
+| stats dc(Image) as UniqueProcesses, values(Image) as ProcessList by host
+| eval Activity_Level=case(
+    UniqueProcesses > 100, "VERY HIGH - Potential Attack Activity",
+    UniqueProcesses > 50, "HIGH - Elevated Activity",
+    UniqueProcesses < 30, "NORMAL - Baseline Activity",
+    1=1, "MEDIUM - Monitor"
+)
+| table host, UniqueProcesses, Activity_Level
+
+# Analysis:
+# Higher process diversity may indicate attacker tool execution
+# Baseline workstation: 20-40 unique processes in 24 hours
+# Under attack: 50+ processes (includes attack tools, recon, persistence)
+
+# Query 6: PowerShell Execution Comparison
+index=wineeventlog sourcetype="WinEventLog:Microsoft-Windows-PowerShell/Operational"
+| stats count as PowerShellEvents, dc(ScriptBlockText) as UniqueScripts by host
+| eval PowerShell_Usage=case(
+    UniqueScripts > 10, "SUSPICIOUS - High Script Diversity",
+    UniqueScripts > 5, "ELEVATED - Monitor for Malicious Scripts",
+    1=1, "NORMAL - Typical Usage"
+)
+| table host, PowerShellEvents, UniqueScripts, PowerShell_Usage
+
+# Query 7: Admin Group Modification Comparison
+index=wineeventlog EventCode=4732 TargetUserName="Administrators"
+| stats count as AdminChanges, values(MemberName) as UsersAdded by host
+| eval Privilege_Alert=case(
+    AdminChanges > 1, "CRITICAL - Multiple Admin Additions",
+    AdminChanges > 0, "HIGH - Admin Group Modified",
+    1=1, "NORMAL - No Changes"
+)
+| table host, AdminChanges, UsersAdded, Privilege_Alert
+
+# Expected Output:
+# host              | AdminChanges | UsersAdded  | Privilege_Alert
+# ------------------------------------------------------------------
+# DESKTOP-PT2GLLD   | 1            | Backdoor    | HIGH - Admin Group Modified
+# MY-WINDOWS-PC     | 0            | (none)      | NORMAL - No Changes
+
+# Query 8: Comprehensive Multi-Host Dashboard
+index=* (sourcetype="WinEventLog:*" OR sourcetype="XmlWinEventLog:*")
+| eval Metric=case(
+    EventCode=4720, "New Accounts",
+    EventCode=4732, "Admin Additions",
+    EventCode=4698, "Scheduled Tasks",
+    EventCode=4625, "Failed Logins",
+    EventCode=1102, "Log Clearing",
+    EventCode=3, "Network Connections",
+    1=1, "Other"
+)
+| stats count by host, Metric
+| chart count over Metric by host
+
+# Result: Side-by-side comparison table showing all metrics per host
+# Enables quick visual identification of compromised host
+
+# Query 9: Behavioral Baseline Profiling
+index=sysmon EventCode=3 host="MY-WINDOWS-PC"
+| stats dc(DestinationPort) as Baseline_UniquePorts, 
+        dc(DestinationIp) as Baseline_UniqueIPs,
+        count as Baseline_TotalConnections
+| appendcols 
+    [search index=sysmon EventCode=3 host="DESKTOP-PT2GLLD"
+    | stats dc(DestinationPort) as Attack_UniquePorts,
+            dc(DestinationIp) as Attack_UniqueIPs,
+            count as Attack_TotalConnections]
+| eval Port_Deviation_Ratio=Attack_UniquePorts/Baseline_UniquePorts
+| eval IP_Deviation_Ratio=Attack_UniqueIPs/Baseline_UniqueIPs
+| eval Connection_Deviation_Ratio=Attack_TotalConnections/Baseline_TotalConnections
+| table Baseline_*, Attack_*, *_Deviation_Ratio
+
+# Expected Output:
+# Baseline_UniquePorts | Attack_UniquePorts | Port_Deviation_Ratio
+# -----------------------------------------------------------------
+# 7                    | 52                 | 7.43x (743% increase)
+
+# Interpretation:
+# Deviation ratio > 2.0 = Significant anomaly
+# Deviation ratio > 5.0 = Critical anomaly (likely attack)
+# Victim showed 7.43x increase in port diversity = ATTACK
+
+# Query 10: Time-Series Anomaly Detection
+index=sysmon EventCode=3
+| timechart span=1h dc(DestinationPort) as UniquePorts by host
+| foreach DESKTOP-* MY-* 
+    [eval <<FIELD>>_zscore=(<<FIELD>>-avg(<<FIELD>>))/stdev(<<FIELD>>)]
+| where 'DESKTOP-PT2GLLD_zscore' > 2 OR 'MY-WINDOWS-PC_zscore' > 2
+
+# Time-series analysis to detect when anomaly occurred
+# Pinpoints exact hour when attack traffic spiked
+
+# SOC Use Case: Compromised Host Identification
+# Scenario: You have 100 endpoints. One is compromised. How to find it?
+# 
+# Step 1: Run port usage comparison (Query 1)
+# Step 2: Identify hosts with >3x baseline port diversity
+# Step 3: Check failed logins on flagged hosts (Query 2)
+# Step 4: Verify new accounts created (Query 3)
+# Step 5: Check for scheduled task persistence (Query 4)
+# Step 6: Review process execution timeline (Query 6)
+# Step 7: Isolate compromised host and begin incident response
+
+# Production Deployment:
+# - Schedule: Run every 4 hours
+# - Create dashboard with side-by-side host comparison
+# - Alert when deviation ratio > 3.0x baseline
+# - Baseline period: Rolling 7-day average
+# - Whitelist: Known scanners, update servers, backup systems
+
+# Benefits of Multi-Host Correlation:
+# ✅ Detects attacks that evade single-host threshold detection
+# ✅ Reduces false positives by comparing against known-good baseline
+# ✅ Identifies "low and slow" attacks via statistical analysis
+# ✅ Scales to enterprise environments (compare 1 vs. 1000 hosts)
+# ✅ Adapts to environment-specific baselines automatically
+
+# MITRE ATT&CK Techniques Detected via Correlation:
+# T1046 - Network Service Discovery (port scan anomaly)
+# T1110 - Brute Force (failed login anomaly)
+# T1136 - Create Account (new account anomaly)
+# T1053 - Scheduled Task (persistence anomaly)
+# T1098 - Account Manipulation (admin group anomaly)

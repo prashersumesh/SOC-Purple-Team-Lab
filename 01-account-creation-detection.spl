@@ -1,0 +1,31 @@
+# Detection Query #1: Rogue Account Creation
+# MITRE ATT&CK: T1136.001 - Create Account: Local Account
+# Detection Logic: Monitors EventCode 4720 (user account created) on victim host
+# Alert Threshold: ANY new account creation outside of authorized change windows
+# Business Impact: Unauthorized accounts indicate persistent backdoor access
+
+index=wineeventlog EventCode=4720 host="DESKTOP-PT2GLLD"
+| table _time, TargetUserName, SubjectUserName, SubjectDomainName
+| rename TargetUserName as "Account Created", SubjectUserName as "Created By", SubjectDomainName as "Domain"
+| eval Alert_Priority="HIGH"
+
+# Expected Output:
+# Account Created | Created By   | Domain        | Alert_Priority
+# ----------------------------------------------------------------
+# Backdoor        | Lab_Victim   | DESKTOP-PT2GLLD | HIGH
+# AttackTest      | Lab_Victim   | DESKTOP-PT2GLLD | HIGH
+# TestUser        | Lab_Victim   | DESKTOP-PT2GLLD | HIGH
+# FreshTest       | Lab_Victim   | DESKTOP-PT2GLLD | HIGH
+
+# SOC Action:
+# 1. Verify account creation was authorized via ticketing system
+# 2. Check if created by non-admin user (escalation indicator)
+# 3. Immediately disable account if unauthorized
+# 4. Investigate creating user's recent activity
+# 5. Check for privilege escalation attempts (EventCode 4732)
+
+# Production Deployment Notes:
+# - Schedule as real-time alert with email notification
+# - Whitelist authorized admin accounts in SPL
+# - Integrate with ServiceNow for automatic ticket creation
+# - Set retention period: 90 days minimum for compliance
