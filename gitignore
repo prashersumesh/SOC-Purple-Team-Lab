@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Sensitive data (uncomment if storing credentials - DO NOT for this public lab)
+# *.key
+# *.pem
+# credentials.txt
+# passwords.txt
+
+# Large files (if needed)
+# *.pcap
+# *.dmp
+# *.vmem
+
+# Reports (keep PDFs in repo for portfolio)
+# *.pdf
+
+# Keep screenshots
+!screenshots/**/*.png
+!screenshots/**/*.jpg
